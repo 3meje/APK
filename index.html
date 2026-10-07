@@ -6,6 +6,7 @@
 <title>Deriv Smart Trader Pro</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.2.0/chartjs-plugin-zoom.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.22.0/tf.min.js" defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -6850,6 +6851,91 @@ function llCountdown(){ const el=document.getElementById('llCd'), a=LL.active; i
   const p=document.getElementById('lloydsPill'); if(p) p.addEventListener('click',()=>document.getElementById('aiAnalyseBtn').click());
 })();
 
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════
+// CLOUD SYNC (Supabase) — saves closed trades online and
+// restores them on any device. Fails silently if offline.
+// ═══════════════════════════════════════════════════════════
+(function () {
+  const SUPABASE_URL  = 'https://xxplvrrezbhkdcfbpdfs.supabase.co';
+  const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh4cGx2cnJlemJoa2RjZmJwZGZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEzODU0MjcsImV4cCI6MjEwNjk2MTQyN30.kxdFaTsRYJ2S-OKOCIPFlw1VZxOT4arH66O39ANEab0';
+  const OWNER_KEY = 'st_sync_owner';
+
+  let client = null;
+  try { if (window.supabase) client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON); } catch (e) { client = null; }
+
+  async function sha256Hex(text) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function getOwner(forcePrompt) {
+    let owner = null;
+    try { owner = localStorage.getItem(OWNER_KEY); } catch (e) {}
+    if (owner && !forcePrompt) return owner;
+    const phrase = window.prompt(
+      'CLOUD SYNC\n\nChoose a private sync passphrase (a long phrase only you know).\n' +
+      'Use the SAME passphrase on every device to see the same trade history.\n' +
+      'Leave empty / Cancel to skip cloud sync.');
+    if (!phrase || phrase.trim().length < 8) {
+      if (phrase) showToast('Passphrase too short (min 8 characters) — cloud sync off', 'warn');
+      return null;
+    }
+    owner = await sha256Hex('smart-trader-pro:' + phrase.trim());
+    try { localStorage.setItem(OWNER_KEY, owner); } catch (e) {}
+    return owner;
+  }
+
+  async function saveTrade(trade, contractId) {
+    if (!client) return;
+    try {
+      const owner = await getOwner(false);
+      if (!owner) return;
+      const data = JSON.parse(JSON.stringify(trade));
+      const { error } = await client.rpc('st_save', { p_owner: owner, p_contract: String(contractId), p_data: data });
+      if (error) console.warn('[cloud] save failed:', error.message);
+    } catch (e) { console.warn('[cloud] save error:', e); }
+  }
+
+  async function loadTrades() {
+    if (!client) return;
+    try {
+      const owner = await getOwner(false);
+      if (!owner) return;
+      const { data, error } = await client.rpc('st_load', { p_owner: owner, p_limit: 100 });
+      if (error) { console.warn('[cloud] load failed:', error.message); return; }
+      if (!Array.isArray(data) || !data.length) return;
+      const have = new Set(tradeHistory.map(t => String(t.contract_id)));
+      let added = 0;
+      data.forEach(t => { if (t && !have.has(String(t.contract_id))) { tradeHistory.push(t); added++; } });
+      tradeHistory.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
+      if (tradeHistory.length > 100) tradeHistory.length = 100;
+      if (added) { showToast('☁ Restored ' + added + ' trades from cloud', 'info'); renderRightPanel(); }
+    } catch (e) { console.warn('[cloud] load error:', e); }
+  }
+
+  // Save every trade the moment it closes
+  const origHandle = handleContractUpdate;
+  handleContractUpdate = function (poc) {
+    const before = tradeHistory[0];
+    const id = poc && poc.contract_id;
+    origHandle.apply(this, arguments);
+    const after = tradeHistory[0];
+    if (after && after !== before && id) saveTrade(after, id);
+  };
+
+  // Restore history once the app opens after login
+  const origInit = initApp;
+  initApp = function () {
+    const r = origInit.apply(this, arguments);
+    setTimeout(loadTrades, 800);
+    return r;
+  };
+
+  // Console helper if you ever want to change passphrase:  stChangePassphrase()
+  window.stChangePassphrase = async function () { await getOwner(true); loadTrades(); };
+})();
 </script>
 </body>
 </html>
